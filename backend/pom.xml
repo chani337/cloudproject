@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- ========================================
+         Spring Boot Parent: 버전 관리를 자동으로 해줌
+         ======================================== -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>cloud-practice</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>cloud-practice</name>
+    <description>Apache to Spring Boot Cloud Practice - Public/Private Subnet 실습</description>
+    <packaging>jar</packaging>
+
+    <properties>
+        <!-- Java 17 사용 -->
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <!-- ========================================
+             Spring Boot Web Starter
+             - 내장 Tomcat 포함
+             - REST API 개발에 필요한 모든 것 포함
+             - DB, JPA, Security 의존성 없음 (수업 실습용)
+             ======================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- 테스트용 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- ========================================
+                 Spring Boot Maven Plugin
+                 - mvnw clean package 실행 시 실행 가능한 jar 생성
+                 - java -jar target/*.jar 로 바로 실행 가능
+                 ======================================== -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
