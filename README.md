@@ -1,6 +1,6 @@
-# ☁️ Apache + Spring Boot 클라우드 실습 프로젝트
+# ☁️ Apache + Spring Boot + GitHub Actions 클라우드 실습 프로젝트
 
-Public Subnet의 Apache Web Server와 Private Subnet의 Spring Boot를 연동하는 클라우드 수업 실습 프로젝트입니다.
+Public Subnet의 Apache Web Server와 Private Subnet의 Spring Boot를 연동하고, systemd와 GitHub Actions CI/CD까지 구성하는 클라우드 수업 실습 프로젝트입니다.
 
 ---
 
@@ -22,6 +22,11 @@ Public Subnet의 Apache Web Server와 Private Subnet의 Spring Boot를 연동하
 14. [NCP ACG 설정](#14-ncp-acg-설정)
 15. [NAT Gateway 설명](#15-nat-gateway-설명)
 16. [수업 설명](#16-수업-설명)
+17. [systemd 서비스 등록](#17-systemd-서비스-등록)
+18. [SSH 설정](#18-ssh-설정)
+19. [GitHub Actions CI/CD](#19-github-actions-cicd)
+20. [최종 점검 체크리스트](#20-최종-점검-체크리스트)
+21. [자주 발생하는 오류](#21-자주-발생하는-오류)
 
 ---
 
@@ -94,7 +99,7 @@ Public Subnet의 Apache Web Server와 Private Subnet의 Spring Boot를 연동하
 ## 3. 프로젝트 구조
 
 ```
-apache-springboot-cloud-practice/
+cloudproject/
 ├── frontend/                          # React 프론트엔드
 │   ├── package.json
 │   ├── index.html
@@ -177,11 +182,11 @@ Private 서버에 SSH로 접속한 후 아래 명령어를 순서대로 실행�
 ```bash
 # 1. 프로젝트 클론
 cd /opt
-sudo git clone [저장소주소]
-sudo chown -R $USER:$USER apache-springboot-cloud-practice
+sudo git clone https://github.com/chani337/cloudproject.git
+sudo chown -R $USER:$USER cloudproject
 
 # 2. 백엔드 디렉토리로 이동
-cd apache-springboot-cloud-practice/backend
+cd cloudproject/backend
 
 # 3. Maven Wrapper 실행 권한 부여
 chmod +x mvnw
@@ -265,11 +270,11 @@ npm -v
 ```bash
 # 1. 프로젝트 클론
 cd /opt
-sudo git clone [저장소주소]
-sudo chown -R $USER:$USER apache-springboot-cloud-practice
+sudo git clone https://github.com/chani337/cloudproject.git
+sudo chown -R $USER:$USER cloudproject
 
 # 2. 프론트엔드 디렉토리로 이동
-cd apache-springboot-cloud-practice/frontend
+cd cloudproject/frontend
 
 # 3. 의존성 설치
 npm install
@@ -470,3 +475,532 @@ Private Subnet의 Route Table에 아래 경로를 추가해야 합니다:
 3. **보안**: Private 서버를 외부에 노출하지 않는 아키텍처 패턴 이해
 4. **ACG(방화벽)**: 필요한 포트만 최소한으로 여는 보안 원칙 이해
 5. **NAT Gateway**: Private 서버의 아웃바운드 인터넷 접속 방법 이해
+
+
+---
+
+## 17. systemd 서비스 등록
+
+`nohup`은 임시 실행에는 편리하지만, 서버를 재부팅하면 Spring Boot가 자동으로 다시 실행되지 않습니다.  
+운영 형태로 배포하려면 Private 서버에서 Spring Boot를 `systemd` 서비스로 등록합니다.
+
+### 17-1. Private 서버에서 기존 Java 프로세스 종료
+
+```bash
+pkill -f 'java -jar' 2>/dev/null
+ps -ef | grep java
+```
+
+### 17-2. 배포용 디렉토리 생성
+
+Private 서버에서 실행합니다.
+
+```bash
+mkdir -p /opt/cloudproject/app
+cd /opt/cloudproject/backend
+cp target/*.jar /opt/cloudproject/app/app.jar
+```
+
+### 17-3. systemd 서비스 파일 생성
+
+```bash
+sudo tee /etc/systemd/system/cloudproject.service > /dev/null <<'EOF'
+[Unit]
+Description=Cloud Project Spring Boot Backend
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/cloudproject/app
+ExecStart=/usr/bin/java -jar /opt/cloudproject/app/app.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+
+StandardOutput=append:/opt/cloudproject/app/app.log
+StandardError=append:/opt/cloudproject/app/error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+### 17-4. 서비스 시작 및 자동 실행 등록
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start cloudproject
+sudo systemctl enable cloudproject
+sudo systemctl status cloudproject
+```
+
+### 17-5. 서비스 확인
+
+```bash
+ss -tulnp | grep 8080
+curl http://localhost:8080/api/health
+```
+
+### 17-6. 로그 확인
+
+```bash
+journalctl -u cloudproject -f
+```
+
+또는 파일 로그를 확인합니다.
+
+```bash
+tail -f /opt/cloudproject/app/app.log
+tail -f /opt/cloudproject/app/error.log
+```
+
+### 17-7. 백엔드 재배포 수동 절차
+
+Private 서버에서 백엔드 코드를 새로 반영할 때는 아래 순서로 진행합니다.
+
+```bash
+cd /opt/cloudproject/backend
+git pull
+./mvnw clean package -DskipTests
+
+sudo systemctl stop cloudproject
+cp target/*.jar /opt/cloudproject/app/app.jar
+sudo systemctl start cloudproject
+sudo systemctl status cloudproject
+
+curl http://localhost:8080/api/health
+```
+
+---
+
+## 18. SSH 설정
+
+Public 서버는 Private 서버로 접속하는 Bastion 역할을 합니다.  
+GitHub Actions CI/CD에서도 Public 서버를 거쳐 Private 서버에 접근해야 하므로, Public 서버에서 Private 서버로 비밀번호 없이 SSH 접속되도록 설정합니다.
+
+### 18-1. Public 서버에서 SSH 키 생성
+
+Public 서버에서 실행합니다.
+
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/cloud_private_key
+```
+
+엔터를 눌러 기본값으로 진행합니다.
+
+### 18-2. Public 서버 공개키 확인
+
+```bash
+cat ~/.ssh/cloud_private_key.pub
+```
+
+출력된 공개키 내용을 복사합니다.
+
+### 18-3. Private 서버에 공개키 등록
+
+Public 서버에서 Private 서버로 접속합니다.
+
+```bash
+ssh root@10.10.20.6
+```
+
+Private 서버에서 실행합니다.
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+nano ~/.ssh/authorized_keys
+```
+
+Public 서버에서 복사한 공개키를 붙여넣고 저장합니다.
+
+```bash
+chmod 600 ~/.ssh/authorized_keys
+exit
+```
+
+### 18-4. Public 서버에서 Private 서버 접속 테스트
+
+```bash
+ssh -i ~/.ssh/cloud_private_key root@10.10.20.6
+```
+
+### 18-5. SSH 별칭 설정
+
+Public 서버에서 실행합니다.
+
+```bash
+nano ~/.ssh/config
+```
+
+아래 내용을 입력합니다.
+
+```sshconfig
+Host cloud-private
+    HostName 10.10.20.6
+    User root
+    Port 22
+    IdentityFile ~/.ssh/cloud_private_key
+```
+
+권한 설정:
+
+```bash
+chmod 600 ~/.ssh/config
+```
+
+이제 Public 서버에서 아래 명령어만으로 Private 서버에 접속할 수 있습니다.
+
+```bash
+ssh cloud-private
+```
+
+---
+
+## 19. GitHub Actions CI/CD
+
+GitHub Actions를 사용하면 `main` 브랜치에 push할 때마다 프론트엔드와 백엔드를 자동으로 빌드하고 서버에 배포할 수 있습니다.
+
+### 19-1. CI/CD 배포 흐름
+
+```
+개발자 git push
+→ GitHub Repository
+→ GitHub Actions 실행
+→ backend Maven build
+→ frontend Vite build
+→ Public 서버에 React dist 배포
+→ Public 서버를 경유하여 Private 서버에 app.jar 전송
+→ Private 서버 cloudproject.service 재시작
+→ Public Apache를 통해 /api/health 확인
+```
+
+### 19-2. GitHub Actions가 Private 서버에 직접 접속하지 못하는 이유
+
+Private 서버의 IP인 `10.10.20.6`은 VPC 내부에서만 접근 가능한 사설 IP입니다.  
+따라서 GitHub Actions Runner는 Private 서버에 직접 접속할 수 없습니다.
+
+그래서 아래 구조로 배포합니다.
+
+```
+GitHub Actions
+→ Public 서버 SSH 접속
+→ Public 서버에서 Private 서버로 SCP/SSH
+→ Private 서버 Spring Boot 재시작
+```
+
+### 19-3. GitHub Secrets 등록
+
+GitHub 저장소에서 아래 위치로 이동합니다.
+
+```
+Settings
+→ Secrets and variables
+→ Actions
+→ New repository secret
+```
+
+다음 Secret을 등록합니다.
+
+| Secret 이름 | 값 |
+|------------|----|
+| `PUBLIC_HOST` | Public 서버 공인 IP 예: `223.130.157.120` |
+| `PUBLIC_USER` | 예: `root` |
+| `PUBLIC_SSH_KEY` | GitHub Actions가 Public 서버에 접속할 때 사용할 private key 전체 내용 |
+| `PRIVATE_HOST` | Private 서버 내부 IP 예: `10.10.20.6` |
+| `PRIVATE_USER` | 예: `root` |
+
+> 주의: `PUBLIC_SSH_KEY`에는 `.pub` 파일이 아니라 private key 내용을 넣어야 합니다.
+
+### 19-4. Public 서버에 CI/CD용 Private 서버 접속 키 준비
+
+GitHub Actions는 Public 서버까지만 직접 접속합니다.  
+그 다음 Public 서버 내부에서 Private 서버로 접속할 때는 `/root/.ssh/cloud_private_key`를 사용합니다.
+
+Public 서버에서 아래가 성공해야 합니다.
+
+```bash
+ssh -i ~/.ssh/cloud_private_key root@10.10.20.6
+```
+
+### 19-5. GitHub Actions Workflow 파일 생성
+
+저장소에 아래 경로로 파일을 생성합니다.
+
+```
+.github/workflows/deploy.yml
+```
+
+내용:
+
+```yaml
+name: Deploy Cloud Project
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build Spring Boot backend
+        working-directory: backend
+        run: |
+          chmod +x mvnw
+          ./mvnw clean package -DskipTests
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Prepare SSH key for Public server
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PUBLIC_SSH_KEY }}" > ~/.ssh/public_key
+          chmod 600 ~/.ssh/public_key
+          ssh-keyscan -H ${{ secrets.PUBLIC_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Upload frontend build to Public server
+        run: |
+          tar -czf frontend-dist.tar.gz -C frontend/dist .
+          scp -i ~/.ssh/public_key frontend-dist.tar.gz ${{ secrets.PUBLIC_USER }}@${{ secrets.PUBLIC_HOST }}:/tmp/frontend-dist.tar.gz
+
+      - name: Deploy frontend on Public server
+        run: |
+          ssh -i ~/.ssh/public_key ${{ secrets.PUBLIC_USER }}@${{ secrets.PUBLIC_HOST }} << 'EOF'
+            set -e
+            mkdir -p /var/www/cloud-practice
+            rm -rf /var/www/cloud-practice/*
+            tar -xzf /tmp/frontend-dist.tar.gz -C /var/www/cloud-practice
+            systemctl restart apache2
+          EOF
+
+      - name: Upload backend jar to Public server
+        run: |
+          cp backend/target/*.jar app.jar
+          scp -i ~/.ssh/public_key app.jar ${{ secrets.PUBLIC_USER }}@${{ secrets.PUBLIC_HOST }}:/tmp/app.jar
+
+      - name: Deploy backend to Private server through Public server
+        run: |
+          ssh -i ~/.ssh/public_key ${{ secrets.PUBLIC_USER }}@${{ secrets.PUBLIC_HOST }} << EOF
+            set -e
+
+            scp -i ~/.ssh/cloud_private_key /tmp/app.jar ${{ secrets.PRIVATE_USER }}@${{ secrets.PRIVATE_HOST }}:/opt/cloudproject/app/app.jar
+
+            ssh -i ~/.ssh/cloud_private_key ${{ secrets.PRIVATE_USER }}@${{ secrets.PRIVATE_HOST }} '
+              systemctl daemon-reload
+              systemctl restart cloudproject
+              systemctl status cloudproject --no-pager
+            '
+          EOF
+
+      - name: Health check through Public Apache
+        run: |
+          sleep 5
+          curl -f http://${{ secrets.PUBLIC_HOST }}/api/health
+```
+
+### 19-6. GitHub Actions 실행 조건
+
+위 설정은 `main` 브랜치에 push될 때 자동 실행됩니다.
+
+```bash
+git add .
+git commit -m "add github actions deploy workflow"
+git push origin main
+```
+
+### 19-7. CI/CD 성공 확인
+
+GitHub 저장소에서 아래 메뉴로 이동합니다.
+
+```
+Actions
+→ Deploy Cloud Project
+```
+
+성공 후 Public 서버에서 확인합니다.
+
+```bash
+curl http://localhost/api/health
+```
+
+브라우저에서 확인합니다.
+
+```
+http://퍼블릭서버공인IP
+http://퍼블릭서버공인IP/api/health
+```
+
+### 19-8. GitHub Actions용 ACG 주의사항
+
+GitHub Actions Runner는 고정 IP가 아닐 수 있습니다.  
+따라서 Actions가 Public 서버에 SSH 접속하려면 Public 서버 ACG의 TCP 22 접근소스를 넓게 열어야 할 수 있습니다.
+
+임시 설정:
+
+```
+Public 서버 ACG:
+TCP 22  0.0.0.0/0
+```
+
+단, 실무에서는 위험합니다.  
+수업에서는 반드시 아래 내용을 설명합니다.
+
+```
+실무에서는 22번을 0.0.0.0/0으로 열지 않는다.
+VPN, Bastion, Self-hosted Runner, 고정 IP Runner, 배포 전용 계정 등을 사용한다.
+```
+
+---
+
+## 20. 최종 점검 체크리스트
+
+### 네트워크
+
+- [ ] Public 서버에 공인 IP가 연결되어 있다.
+- [ ] Public 서버 Subnet은 Internet Gateway가 적용되어 있다.
+- [ ] Private 서버는 공인 IP가 없다.
+- [ ] Private 서버는 Public 서버를 통해 SSH 접속한다.
+- [ ] Private 서버에서 `apt update`, `git clone`, Maven 빌드가 필요하면 NAT Gateway가 구성되어 있다.
+- [ ] Private Subnet Route Table에 `0.0.0.0/0 → NAT Gateway` 경로가 있다.
+
+### ACG
+
+- [ ] Public 서버 ACG에 TCP 80이 `0.0.0.0/0`으로 열려 있다.
+- [ ] Public 서버 ACG에 TCP 22가 관리자 IP 또는 실습용 허용 범위로 열려 있다.
+- [ ] Private 서버 ACG에 TCP 22가 Public 서버 내부 IP로 열려 있다.
+- [ ] Private 서버 ACG에 TCP 8080이 Public 서버 내부 IP로 열려 있다.
+
+### Private 서버
+
+- [ ] Java 17이 설치되어 있다.
+- [ ] Spring Boot가 8080 포트에서 실행 중이다.
+- [ ] `curl http://localhost:8080/api/health`가 정상 응답한다.
+- [ ] `cloudproject.service`가 active 상태이다.
+- [ ] 서버 재부팅 후에도 Spring Boot가 자동 실행된다.
+
+### Public 서버
+
+- [ ] Apache가 설치되어 있다.
+- [ ] `proxy`, `proxy_http`, `rewrite`, `headers` 모듈이 활성화되어 있다.
+- [ ] React 빌드 파일이 `/var/www/cloud-practice`에 배포되어 있다.
+- [ ] Apache 설정 파일이 `/etc/apache2/sites-available/cloud-practice.conf`에 있다.
+- [ ] `sudo apachectl configtest` 결과가 `Syntax OK`이다.
+- [ ] `curl http://localhost/api/health`가 정상 응답한다.
+
+### CI/CD
+
+- [ ] GitHub Secrets가 등록되어 있다.
+- [ ] `.github/workflows/deploy.yml` 파일이 있다.
+- [ ] `main` 브랜치 push 시 GitHub Actions가 실행된다.
+- [ ] Actions 성공 후 Public 화면과 API가 정상 동작한다.
+
+---
+
+## 21. 자주 발생하는 오류
+
+### 21-1. `https://공인IP`로 접속했는데 안 됨
+
+HTTPS는 SSH와 다릅니다.
+
+- SSH: 22번 포트
+- HTTP: 80번 포트
+- HTTPS: 443번 포트 + SSL 인증서 필요
+
+기본 실습은 HTTP 기준입니다.
+
+```
+http://퍼블릭서버공인IP
+```
+
+HTTPS를 사용하려면 도메인, 인증서, Apache SSL 설정이 추가로 필요합니다.
+
+### 21-2. `curl http://10.10.20.6:8080/api/health` 실패
+
+확인 순서:
+
+```bash
+# Private 서버에서
+ss -tulnp | grep 8080
+curl http://localhost:8080/api/health
+systemctl status cloudproject
+tail -n 100 /opt/cloudproject/app/error.log
+```
+
+Private 서버 ACG에 아래 규칙이 있어야 합니다.
+
+```
+TCP 8080  Public서버내부IP/32
+```
+
+### 21-3. Apache에서 502 Bad Gateway 발생
+
+대부분 Private 서버 백엔드가 안 떠 있거나, ACG가 막힌 경우입니다.
+
+```bash
+# Public 서버에서
+curl http://10.10.20.6:8080/api/health
+sudo tail -n 100 /var/log/apache2/error.log
+```
+
+### 21-4. React 화면은 나오는데 API 버튼이 실패함
+
+프론트엔드가 `/api` 상대경로로 요청하는지 확인합니다.
+
+잘못된 예:
+
+```javascript
+fetch("http://10.10.20.6:8080/api/health")
+```
+
+올바른 예:
+
+```javascript
+fetch("/api/health")
+```
+
+브라우저는 Private IP에 직접 접근할 수 없으므로 반드시 Apache 프록시를 거쳐야 합니다.
+
+### 21-5. GitHub Actions에서 SSH 접속 실패
+
+확인할 것:
+
+- `PUBLIC_HOST`가 Public 서버 공인 IP인지 확인
+- `PUBLIC_USER`가 맞는지 확인
+- `PUBLIC_SSH_KEY`에 private key 전체 내용이 들어갔는지 확인
+- Public 서버 ACG의 TCP 22 접근소스가 GitHub Actions 접속을 허용하는지 확인
+- Public 서버의 `~/.ssh/cloud_private_key`로 Private 서버 접속이 되는지 확인
+
+### 21-6. GitHub Actions에서 backend 배포는 됐는데 서비스 재시작 실패
+
+Private 서버에서 확인합니다.
+
+```bash
+systemctl status cloudproject
+journalctl -u cloudproject -n 100 --no-pager
+```
+
+서비스 파일이 없으면 17장 systemd 설정을 먼저 진행해야 합니다.
