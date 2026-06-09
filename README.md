@@ -1003,4 +1003,4 @@ systemctl status cloudproject
 journalctl -u cloudproject -n 100 --no-pager
 ```
 
-서비스 파일이 없으면 17장 systemd 설정을 먼저 진행해야 합니다.
+서비스 파일이 없으면 17장 systemd 설정을 먼저 진행해야 합니다!
